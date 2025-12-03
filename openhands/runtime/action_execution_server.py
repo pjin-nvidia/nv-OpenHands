@@ -67,7 +67,10 @@ from openhands.runtime.file_viewer_server import start_file_viewer_server
 from openhands.runtime.mcp.proxy import MCPProxyManager
 from openhands.runtime.plugins import ALL_PLUGINS, JupyterPlugin, Plugin, VSCodePlugin
 from openhands.runtime.utils import find_available_tcp_port
-from openhands.runtime.utils.bash import BashSession
+from openhands.runtime.utils.bash import (
+    BashSession,
+    create_bash_session,
+)
 from openhands.runtime.utils.files import insert_lines, read_lines
 from openhands.runtime.utils.memory_monitor import MemoryMonitor
 from openhands.runtime.utils.runtime_init import init_user_and_working_directory
@@ -187,7 +190,7 @@ class ActionExecutor:
         if _updated_user_id is not None:
             self.user_id = _updated_user_id
 
-        self.bash_session: BashSession | 'WindowsPowershellSession' | None = None  # type: ignore[name-defined]
+        self.bash_session: BashSession  | 'WindowsPowershellSession' | None = None  # type: ignore[name-defined]
         self.lock = asyncio.Lock()
         self.plugins: dict[str, Plugin] = {}
         self.file_editor = OHEditor(workspace_root=self._initial_cwd)
@@ -277,7 +280,7 @@ class ActionExecutor:
                 max_memory_mb=self.max_memory_gb * 1024 if self.max_memory_gb else None,
             )
         else:
-            bash_session = BashSession(
+            bash_session = create_bash_session(
                 work_dir=cwd or self._initial_cwd,
                 username=self.username,
                 no_change_timeout_seconds=int(

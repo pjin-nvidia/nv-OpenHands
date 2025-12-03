@@ -7,7 +7,6 @@ from typing import Any
 
 import bashlex
 import libtmux
-
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action import CmdRunAction
 from openhands.events.observation import ErrorObservation
@@ -17,6 +16,7 @@ from openhands.events.observation.commands import (
     CmdOutputObservation,
 )
 from openhands.runtime.utils.bash_constants import TIMEOUT_MESSAGE_TEMPLATE
+from openhands.runtime.utils.efficient_bash import EfficientBashSession
 from openhands.utils.shutdown_listener import should_continue
 
 RUNTIME_USERNAME = os.getenv('RUNTIME_USERNAME')
@@ -28,6 +28,7 @@ SU_TO_USER = os.getenv('SU_TO_USER', 'true').lower() in (
     'y',
     'on',
 )
+BASH_BACKEND = os.getenv('OPENHANDS_BASH_BACKEND', 'tmux').lower()
 
 
 def split_bash_commands(commands: str) -> list[str]:
@@ -679,3 +680,56 @@ class BashSession:
             logger.debug(f'SLEEPING for {self.POLL_INTERVAL} seconds for next poll')
             time.sleep(self.POLL_INTERVAL)
         raise RuntimeError('Bash session was likely interrupted...')
+
+
+class EfficientBashSessionAdapter:
+    """Thin synchronous adapter around the asyncio-based EfficientBashSession."""
+
+    def __init__(
+        self,
+        work_dir: str,
+        username: str | None = None,
+        no_change_timeout_seconds: int = 30,
+        max_memory_mb: int | None = None,
+    ):
+        self._session = EfficientBashSession(
+            work_dir=work_dir,
+            username=username,
+            no_change_timeout_seconds=no_change_timeout_seconds,
+            max_memory_mb=max_memory_mb,
+        )
+
+    def initialize(self) -> None:
+        self._session.initialize()
+
+    def close(self) -> None:
+        self._session.close()
+
+    @property
+    def cwd(self) -> str:
+        return self._session.cwd
+
+    def execute(self, action: CmdRunAction) -> CmdOutputObservation | ErrorObservation:
+        return self._session.execute_sync(action)
+
+
+def create_bash_session(
+    work_dir: str,
+    username: str | None,
+    no_change_timeout_seconds: int,
+    max_memory_mb: int | None,
+) -> BashSession | EfficientBashSessionAdapter:
+    if BASH_BACKEND == 'pty':
+        return EfficientBashSessionAdapter(
+            work_dir=work_dir,
+            username=username,
+            no_change_timeout_seconds=no_change_timeout_seconds,
+            max_memory_mb=max_memory_mb,
+        )
+
+    return BashSession(
+        work_dir=work_dir,
+        username=username,
+        no_change_timeout_seconds=no_change_timeout_seconds,
+        max_memory_mb=max_memory_mb,
+    )
