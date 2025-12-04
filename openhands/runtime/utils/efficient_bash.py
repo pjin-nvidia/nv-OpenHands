@@ -19,7 +19,9 @@ import signal
 import termios
 import time
 import tty
+from concurrent.futures import Future
 from typing import Optional, TYPE_CHECKING
+import threading
 
 try:
     import ptyprocess
@@ -1296,3 +1298,74 @@ class EfficientBashSession:
     def execute_sync(self, action: CmdRunAction) -> CmdOutputObservation | ErrorObservation:
         """Synchronous wrapper for execute method for compatibility."""
         return asyncio.run(self.execute(action))
+
+
+class ThreadedEfficientBashSession:
+    """
+    Synchronous adapter around EfficientBashSession that owns a dedicated event loop thread.
+    This lets synchronous callers (e.g., ActionExecutionServer) interact with the async
+    implementation without running into cross-loop issues.
+    """
+
+    def __init__(
+        self,
+        work_dir: str,
+        username: str | None = None,
+        no_change_timeout_seconds: int = 30,
+        max_memory_mb: int | None = None,
+    ):
+        self._session = EfficientBashSession(
+            work_dir=work_dir,
+            username=username,
+            no_change_timeout_seconds=no_change_timeout_seconds,
+            max_memory_mb=max_memory_mb,
+        )
+        self._loop = asyncio.new_event_loop()
+        self._loop_ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run_loop, name='EfficientBashSessionLoop', daemon=True
+        )
+        self._thread.start()
+        self._loop_ready.wait()
+
+    def _run_loop(self):
+        asyncio.set_event_loop(self._loop)
+        self._loop_ready.set()
+        self._loop.run_forever()
+
+    def _run_sync_callable(self, func, *args, **kwargs):
+        future: Future = Future()
+
+        def wrapper():
+            try:
+                result = func(*args, **kwargs)
+            except Exception as exc:
+                future.set_exception(exc)
+            else:
+                future.set_result(result)
+
+        self._loop.call_soon_threadsafe(wrapper)
+        return future.result()
+
+    def initialize(self) -> None:
+        self._run_sync_callable(self._session.initialize)
+
+    def close(self) -> None:
+        try:
+            self._run_sync_callable(self._session.close)
+        finally:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._thread.join()
+
+    @property
+    def cwd(self) -> str:
+        return self._session.cwd
+
+    def execute_sync(self, action: CmdRunAction) -> CmdOutputObservation | ErrorObservation:
+        coro = self._session.execute(action)
+        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return future.result()
+
+    # Backwards compatibility hook (some callers expect .execute)
+    def execute(self, action: CmdRunAction) -> CmdOutputObservation | ErrorObservation:
+        return self.execute_sync(action)
