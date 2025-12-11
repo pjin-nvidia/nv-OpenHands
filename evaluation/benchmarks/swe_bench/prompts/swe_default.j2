@@ -8,52 +8,97 @@ I've uploaded a python code repository in the directory {{ workspace_dir_name }}
 {{ instance.problem_statement }}
 </issue_description>
 
-Can you help me implement the necessary changes to the repository so that the requirements specified in the <pr_description> are met?
-I've already taken care of all changes to any of the test files described in the <pr_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
-Your task is to make the minimal changes to non-tests files in the {{working_dir}} directory to ensure the <pr_description> is satisfied.
-Follow these steps to resolve the issue:
-   1. As a first step, it might be a good idea to find and read code relevant to the <pr_description>
-   2. Create a script to reproduce the error and execute it with `python <filename.py>` using the bash tool, to confirm the error
-   3. Edit the sourcecode of the repo to resolve the issue
-   4. Rerun your reproduce script and confirm that the error is fixed!
-   5. Think about edgecases and make sure your fix handles them as well
-Your thinking should be thorough and so it's fine if it's very long.
+Can you help me implement the necessary changes to the repository so that the requirements specified in the <issue_description> are met?
+I've already taken care of all changes to any of the test files described in the <issue_description>. This means you DON'T have to modify the testing logic or any of the tests in any way!
+Also the development Python environment is already set up for you (i.e., all dependencies already installed), so you don't need to install other packages.
+Your task is to make the minimal changes to non-test files in the /workspace/{{ workspace_dir_name }} directory to ensure the <issue_description> is satisfied.
 
+Follow these phases to resolve the issue:
 
-<TASK_MANAGEMENT>
-* You MUST use the TODO.md file to track your progress:
-  1. Start by creating a detailed plan in TODO.md with clear steps
-  2. Check TODO.md before each new action to maintain context and track progress
-  3. Update TODO.md as you complete steps or discover new requirements
-  4. Mark completed items with ✓ or [x] to maintain a clear record of progress
-  5. For each major step, add sub-tasks as needed to break down complex work
-  6. If you discover the plan needs significant changes, propose updates and confirm with the user before proceeding and update TODO.md
-  7. IMPORTANT: Do NOT add TODO.md to git commits or version control systems
+Phase 1. READING: read the problem and reword it in clearer terms
+   1.1 If there are code or config snippets. Express in words any best practices or conventions in them.
+   1.2 Hightlight message errors, method names, variables, file names, stack traces, and technical details.
+   1.3 Explain the problem in clear terms.
+   1.4 Enumerate the steps to reproduce the problem.
+   1.5 Hightlight any best practices to take into account when testing and fixing the issue
 
-* Example TODO.md format:
-```markdown
-# Task: [Brief description of the overall task]
+Phase 2. RUNNING: install and run the tests on the repository
+   2.1 Follow the readme
+   2.2 Install the environment and anything needed
+   2.2 Iterate and figure out how to run the tests
 
-## Plan
-- [ ] Step 1: [Description]
-  - [ ] Sub-task 1.1
-  - [ ] Sub-task 1.2
-- [ ] Step 2: [Description]
-- [x] Step 3: [Description] (Completed)
+Phase 3. EXPLORATION: find the files that are related to the problem and possible solutions
+   3.1 Use `grep` to search for relevant methods, classes, keywords and error messages.
+   3.2 Identify all files related to the problem statement.
+   3.3 Propose the methods and files to fix the issue and explain why.
+   3.4 From the possible file locations, select the most likely location to fix the issue.
 
-## Notes
-- Important discovery: [Details about something you learned]
-- Potential issue: [Description of a potential problem]
+Phase 4. TEST CREATION: before implementing any fix, create a script to reproduce and verify the issue.
+   4.1 Look at existing test files in the repository to understand the test format/structure.
+   4.2 Create a minimal reproduction script that reproduces the located issue.
+   4.3 Run the reproduction script to confirm you are reproducing the issue.
+   4.4 Adjust the reproduction script as necessary.
+
+Phase 5. FIX ANALYSIS: state clearly the problem and how to fix it
+   5.1 State clearly what the problem is.
+   5.2 State clearly where the problem is located.
+   5.3 State clearly how the test reproduces the issue.
+   5.4 State clearly the best practices to take into account in the fix.
+   5.5 State clearly how to fix the problem.
+
+Phase 6. FIX IMPLEMENTATION: Edit the source code to implement your chosen solution.
+   6.1 Make minimal, focused changes to fix the issue.
+
+Phase 7. VERIFICATION: Test your implementation thoroughly.
+   7.1 Run your reproduction script to verify the fix works.
+   7.2 Add edge cases to your test script to ensure comprehensive coverage.
+   7.3 Run existing tests related to the modified code to ensure you haven't broken anything.
+
+8. FINAL REVIEW: Carefully re-read the problem description and compare your changes with the base commit {{ instance.base_commit }}.
+   8.1 Ensure you've fully addressed all requirements.
+   8.2 Run any tests in the repository related to:
+     8.2.1 The issue you are fixing
+     8.2.2 The files you modified
+     8.2.3 The functions you changed
+   8.3 If any tests fail, revise your implementation until all tests pass
+
+Be thorough in your exploration, testing, and reasoning. It's fine if your thinking process is lengthy - quality and completeness are more important than brevity.
+
+Use the execute_bash tool for any bash commands
+
+## Useful Command Examples
+
+### Create a new file:
+```bash
+cat <<'EOF' > newfile.py
+import numpy as np
+hello = "world"
+print(hello)
+EOF
 ```
 
-* When working on a task:
-  - Read the README to understand how the system works
-  - Create TODO.md with every major step unchecked
-  - Add TODO.md to .gitignore if it's not already ignored
-  - Until every item in TODO.md is checked:
-    a. Pick the next unchecked item and work on it
-    b. Run appropriate tests to verify your work
-    c. If issues arise, fix them until tests pass
-    d. Once complete, check off the item in TODO.md
-    e. Proceed to the next unchecked item
-</TASK_MANAGEMENT>
+### Edit files with sed:
+```bash
+# Replace all occurrences
+sed -i 's/old_string/new_string/g' filename.py
+
+# Replace only first occurrence
+sed -i 's/old_string/new_string/' filename.py
+
+# Replace first occurrence on line 1
+sed -i '1s/old_string/new_string/' filename.py
+
+# Replace all occurrences in lines 1-10
+sed -i '1,10s/old_string/new_string/g' filename.py
+```
+
+### View file content:
+```bash
+# View specific lines with numbers
+nl -ba filename.py | sed -n '10,20p'
+```
+
+### Any other command you want to run
+```bash
+anything
+```

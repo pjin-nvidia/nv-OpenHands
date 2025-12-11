@@ -138,12 +138,12 @@ class CodeActAgent(Agent):
             tools.append(IPythonTool)
         if self.config.enable_llm_editor:
             tools.append(LLMBasedFileEditTool)
-        elif self.config.enable_editor:
-            tools.append(
-                create_str_replace_editor_tool(
-                    use_short_description=use_short_tool_desc
-                )
-            )
+        # elif self.config.enable_editor:
+        #     tools.append(
+        #         create_str_replace_editor_tool(
+        #             use_short_description=use_short_tool_desc
+        #         )
+        #     )
         return tools
 
     def reset(self) -> None:
