@@ -18,6 +18,7 @@ from openhands.agenthub.opencode_agent.tools.grep import GrepTool
 from openhands.agenthub.opencode_agent.tools.list_dir import ListDirTool
 from openhands.agenthub.opencode_agent.tools.question import QUESTION_TOOL_NAME
 from openhands.agenthub.opencode_agent.tools.read import ReadTool
+from openhands.agenthub.opencode_agent.tools.task import SUBAGENT_NAME_MAP, TASK_TOOL_NAME
 from openhands.agenthub.opencode_agent.tools.think import ThinkTool
 from openhands.agenthub.opencode_agent.tools.todo import (
     TODO_READ_TOOL_NAME,
@@ -32,6 +33,7 @@ from openhands.core.exceptions import (
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action import (
     Action,
+    AgentDelegateAction,
     AgentFinishAction,
     AgentThinkAction,
     ApplyPatchAction,
@@ -244,6 +246,32 @@ def response_to_actions(
                         )
                     action = TodoWriteAction(
                         todos=arguments["todos"],
+                    )
+
+                # ================================================
+                # Task (Subagent Delegation)
+                # ================================================
+                elif tool_call.function.name == TASK_TOOL_NAME:
+                    if 'prompt' not in arguments:
+                        raise FunctionCallValidationError(
+                            f'Missing required argument "prompt" in tool call {tool_call.function.name}'
+                        )
+                    if 'subagent_type' not in arguments:
+                        raise FunctionCallValidationError(
+                            f'Missing required argument "subagent_type" in tool call {tool_call.function.name}'
+                        )
+                    agent_name = SUBAGENT_NAME_MAP.get(arguments['subagent_type'])
+                    if not agent_name:
+                        raise FunctionCallValidationError(
+                            f'Unknown subagent_type: {arguments["subagent_type"]}. '
+                            f'Valid types: {", ".join(SUBAGENT_NAME_MAP.keys())}'
+                        )
+                    action = AgentDelegateAction(
+                        agent=agent_name,
+                        inputs={
+                            'task': arguments['prompt'],
+                            'description': arguments.get('description', ''),
+                        },
                     )
 
                 # ================================================

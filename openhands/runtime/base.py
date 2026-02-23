@@ -325,6 +325,13 @@ class Runtime(FileEditRuntimeMixin):
 
     def on_event(self, event: Event) -> None:
         if isinstance(event, Action):
+            if not os.environ.get('OPENHANDS_RUNTIME_URL'):
+                try:
+                    os.environ['OPENHANDS_RUNTIME_URL'] = (
+                        self.action_execution_server_url
+                    )
+                except (NotImplementedError, AttributeError):
+                    pass
             asyncio.get_event_loop().run_until_complete(self._handle_action(event))
 
     async def _export_latest_git_provider_tokens(self, event: Action) -> None:

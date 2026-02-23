@@ -1,0 +1,10 @@
+{% if runtime_info -%}
+<RUNTIME_INFORMATION>
+{% if runtime_info.working_dir %}
+The current working directory is {{ runtime_info.working_dir }}
+{% endif %}
+{% if runtime_info.date %}
+Today's date is {{ runtime_info.date }} (UTC).
+{% endif %}
+</RUNTIME_INFORMATION>
+{% endif %}

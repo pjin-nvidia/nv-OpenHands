@@ -21,6 +21,7 @@ from openhands.agenthub.opencode_agent.tools.grep import GrepTool
 from openhands.agenthub.opencode_agent.tools.list_dir import ListDirTool
 from openhands.agenthub.opencode_agent.tools.question import QuestionTool
 from openhands.agenthub.opencode_agent.tools.read import ReadTool
+from openhands.agenthub.opencode_agent.tools.task import TaskTool
 from openhands.agenthub.opencode_agent.tools.think import ThinkTool
 from openhands.agenthub.opencode_agent.tools.todo import TodoReadTool, TodoWriteTool
 from openhands.agenthub.opencode_agent.tools.write import WriteTool
@@ -29,8 +30,9 @@ from openhands.controller.state.state import State
 from openhands.core.config import AgentConfig
 from openhands.core.logger import openhands_logger as logger
 from openhands.core.message import Message
-from openhands.events.action import AgentFinishAction, MessageAction
+from openhands.events.action import AgentDelegateAction, AgentFinishAction, MessageAction
 from openhands.events.event import Event
+from openhands.events.observation.delegate import AgentDelegateObservation
 from openhands.llm.llm_utils import check_tools
 from openhands.memory.condenser import Condenser
 from openhands.memory.condenser.condenser import Condensation, View
@@ -135,6 +137,9 @@ class OpenCodeAgent(Agent):
         tools.append(TodoReadTool)
         tools.append(TodoWriteTool)
 
+        # Subagent delegation
+        tools.append(TaskTool)
+
         # Structured editing
         # tools.append(ApplyPatchTool)
 
@@ -160,6 +165,11 @@ class OpenCodeAgent(Agent):
         """Performs one step using the OpenCode Agent.
 
         This includes gathering info on previous steps and prompting the model to make a command to execute.
+
+        When the LLM returns multiple task (subagent) tool calls and NO other tool
+        calls, they are executed in parallel via ``ParallelSubagentRunner``.  The
+        results are injected as synthetic events into state.history and the LLM is
+        re-called so the agent sees all subagent outputs at once.
 
         Parameters:
         - state (State): used to get updated info
@@ -204,7 +214,94 @@ class OpenCodeAgent(Agent):
         logger.debug(f"Response from LLM: {response}")
         actions = self.response_to_actions(response)
         logger.debug(f"Actions after response_to_actions: {actions}")
+
+        # --- Parallel subagent execution ---
+        # When ALL actions in the batch are AgentDelegateAction (task tool calls)
+        # and there are ≥2, run them concurrently instead of sequentially.
+        delegate_actions = [a for a in actions if isinstance(a, AgentDelegateAction)]
+        if (
+            len(delegate_actions) >= 2
+            and len(delegate_actions) == len(actions)
+            and os.environ.get('OPENHANDS_RUNTIME_URL')
+        ):
+            return self._handle_parallel_subagents(
+                delegate_actions, state, response, messages, params
+            )
+
         for action in actions:
+            self.pending_actions.append(action)
+        return self.pending_actions.popleft()
+
+    def _handle_parallel_subagents(
+        self,
+        delegate_actions: list[AgentDelegateAction],
+        state: State,
+        original_response: "ModelResponse",
+        messages: list[Message],
+        params: dict,
+    ) -> "Action":
+        """Execute multiple subagent task calls in parallel, inject results, re-call LLM.
+
+        This method mirrors how opencode handles concurrent task tool calls:
+        all tasks run simultaneously, their results are returned as tool results,
+        and the LLM generates its next response based on the combined outputs.
+        """
+        from openhands.agenthub.opencode_agent.subagents.parallel_runner import (
+            ParallelSubagentRunner,
+        )
+
+        logger.info(
+            f'Parallel subagent execution: {len(delegate_actions)} task calls detected'
+        )
+
+        runner = ParallelSubagentRunner(
+            llm_registry=self.llm_registry,
+            parent_agent_config=self.config,
+            agent_configs={},
+        )
+
+        results = runner.run_parallel(delegate_actions)
+
+        # Inject synthetic events into state.history so the conversation memory
+        # picks them up correctly on subsequent calls to _get_messages().
+        base_id = 10_000_000 + len(state.history) * 100
+        for i, delegate_action in enumerate(delegate_actions):
+            tc_id = delegate_action.tool_call_metadata.tool_call_id
+            result = results.get(tc_id, {'content': 'No result', 'outputs': {}})
+
+            synth_action = AgentDelegateAction(
+                agent=delegate_action.agent,
+                inputs=delegate_action.inputs,
+            )
+            synth_action._id = base_id + i * 2
+            synth_action.tool_call_metadata = delegate_action.tool_call_metadata
+
+            synth_obs = AgentDelegateObservation(
+                outputs=result.get('outputs', {}),
+                content=result.get('content', ''),
+            )
+            synth_obs._id = base_id + i * 2 + 1
+            synth_obs._cause = synth_action._id
+            synth_obs.tool_call_metadata = delegate_action.tool_call_metadata
+
+            state.history.append(synth_action)
+            state.history.append(synth_obs)
+
+        # Re-build messages including the synthetic events and re-call LLM
+        condensed_history_new: list[Event] = []
+        match self.condenser.condensed_history(state):
+            case View(events=events):
+                condensed_history_new = events
+            case Condensation(action=condensation_action):
+                return condensation_action
+
+        initial_user_message = self._get_initial_user_message(state.history)
+        new_messages = self._get_messages(condensed_history_new, initial_user_message)
+        params["messages"] = new_messages
+        new_response = self.llm.completion(**params)
+        new_actions = self.response_to_actions(new_response)
+
+        for action in new_actions:
             self.pending_actions.append(action)
         return self.pending_actions.popleft()
 
