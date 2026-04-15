@@ -9,7 +9,7 @@ import json
 import os
 import tempfile
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from openhands.core.logger import openhands_logger as logger
 from nemo_gym.global_config import get_global_config_dict
@@ -35,6 +35,15 @@ class NemoGymClient:
         response = await self.nemo_gym_client.model_call(messages, tools)
     """
 
+    _PROVIDER_SPECIFIC_FIELD_KEYS = (
+        "prompt_token_ids",
+        "generation_token_ids",
+        "generation_log_probs",
+        "prompt_moe_topk_indices",
+        "generation_moe_topk_indices",
+        "moe_metadata",
+    )
+
     def __init__(self, llm: "LLM") -> None:
         self.ng_server_client = ServerClient(
             head_server_config=ServerClient.load_head_server_config(),
@@ -47,18 +56,20 @@ class NemoGymClient:
         self,
         messages: list["Message"],
         tools: "list[ChatCompletionToolParam] | None" = None,
+        request_kwargs: dict[str, Any] | None = None,
     ) -> "ModelResponse":
         """Make a model call via the NeMo Gym server, with automatic metrics tracking.
 
         Args:
             messages: Conversation messages (OpenHands Message objects).
             tools: Optional list of tool definitions for function calling.
+            request_kwargs: Optional extra chat completion fields to forward.
 
         Returns:
             A validated ModelResponse from the server.
         """
         start_time = time.time()
-        response = await self._post_completion(messages, tools)
+        response = await self._post_completion(messages, tools, request_kwargs=request_kwargs)
         self._update_model_call_time(start_time)
         return response
 
@@ -70,6 +81,7 @@ class NemoGymClient:
         self,
         messages: list["Message"],
         tools: "list[ChatCompletionToolParam] | None" = None,
+        request_kwargs: dict[str, Any] | None = None,
     ) -> "ModelResponse":
         from openhands.llm.llm import ModelResponse
 
@@ -81,11 +93,18 @@ class NemoGymClient:
         }
         if tools:
             params["tools"] = tools
+        if request_kwargs:
+            params.update({k: v for k, v in request_kwargs.items() if k not in ("messages", "tools")})
 
-        fields_to_remove = [
+        core_token_fields = [
             "prompt_token_ids",
             "generation_token_ids",
             "generation_log_probs",
+        ]
+        fields_to_remove = core_token_fields + [
+            "prompt_moe_topk_indices",
+            "generation_moe_topk_indices",
+            "moe_metadata",
         ]
         last_occurrence_idx_seen = False
         for message in reversed(message_dicts):
@@ -93,7 +112,7 @@ class NemoGymClient:
                 for field in fields_to_remove:
                     if field in message:
                         del message[field]
-            elif all(field in message for field in fields_to_remove):
+            elif all(field in message for field in core_token_fields):
                 last_occurrence_idx_seen = True
 
         model_response = await self.ng_server_client.post(
@@ -109,13 +128,12 @@ class NemoGymClient:
         response: ModelResponse = ModelResponse.model_validate(model_response_json)
 
         response_message_dict = model_response_json["choices"][0]["message"]
-        provider_specific_fields: dict = {}
-        if response_message_dict.get("prompt_token_ids"):
-            provider_specific_fields = {
-                "prompt_token_ids": response_message_dict["prompt_token_ids"],
-                "generation_token_ids": response_message_dict["generation_token_ids"],
-                "generation_log_probs": response_message_dict["generation_log_probs"],
-            }
+        provider_specific_fields = {
+            key: response_message_dict[key]
+            for key in self._PROVIDER_SPECIFIC_FIELD_KEYS
+            if key in response_message_dict
+        }
+        if provider_specific_fields:
             response._provider_specific_fields = provider_specific_fields
 
         self._log_completion(
