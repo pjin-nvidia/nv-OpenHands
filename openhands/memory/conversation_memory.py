@@ -328,6 +328,9 @@ class ConversationMemory:
                 generation_log_probs=provider_specific_fields.get(
                     'generation_log_probs'
                 ),
+                prompt_moe_topk_indices=provider_specific_fields.get('prompt_moe_topk_indices'),
+                generation_moe_topk_indices=provider_specific_fields.get('generation_moe_topk_indices'),
+                moe_metadata=provider_specific_fields.get('moe_metadata'),
             )
             return []
         elif isinstance(action, AgentFinishAction):
@@ -390,12 +393,11 @@ class ConversationMemory:
                     role=role,  # type: ignore[arg-type]
                     content=content,
                     prompt_token_ids=provider_specific_fields.get('prompt_token_ids'),
-                    generation_token_ids=provider_specific_fields.get(
-                        'generation_token_ids'
-                    ),
-                    generation_log_probs=provider_specific_fields.get(
-                        'generation_log_probs'
-                    ),
+                    generation_token_ids=provider_specific_fields.get('generation_token_ids'),
+                    generation_log_probs=provider_specific_fields.get('generation_log_probs'),
+                    prompt_moe_topk_indices=provider_specific_fields.get('prompt_moe_topk_indices'),
+                    generation_moe_topk_indices=provider_specific_fields.get('generation_moe_topk_indices'),
+                    moe_metadata=provider_specific_fields.get('moe_metadata'),
                 )
             ]
         elif isinstance(action, CmdRunAction) and action.source == 'user':
