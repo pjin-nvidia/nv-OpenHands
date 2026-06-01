@@ -72,7 +72,7 @@ class Message(BaseModel):
     generation_log_probs: list[float] | None = None
     prompt_moe_topk_indices: dict[str, Any] | list[Any] | None = None
     generation_moe_topk_indices: dict[str, Any] | list[Any] | None = None
-    moe_metadata: dict[str, Any] | None = None
+    moe_metadata: dict[str, Any] | list[Any] | None = None
 
     @property
     def contains_image(self) -> bool:

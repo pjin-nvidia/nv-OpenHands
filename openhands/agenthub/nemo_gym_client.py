@@ -129,9 +129,7 @@ class NemoGymClient:
 
         response_message_dict = model_response_json["choices"][0]["message"]
         provider_specific_fields = {
-            key: response_message_dict[key]
-            for key in self._PROVIDER_SPECIFIC_FIELD_KEYS
-            if key in response_message_dict
+            key: response_message_dict[key] for key in self._PROVIDER_SPECIFIC_FIELD_KEYS if key in response_message_dict
         }
         if provider_specific_fields:
             response._provider_specific_fields = provider_specific_fields
