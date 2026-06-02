@@ -35,14 +35,19 @@ class NemoGymClient:
         response = await self.nemo_gym_client.model_call(messages, tools)
     """
 
-    _PROVIDER_SPECIFIC_FIELD_KEYS = (
+    _CORE_TOKEN_FIELD_KEYS = (
         "prompt_token_ids",
         "generation_token_ids",
         "generation_log_probs",
+    )
+
+    _MOE_FIELD_KEYS = (
         "prompt_moe_topk_indices",
         "generation_moe_topk_indices",
         "moe_metadata",
     )
+
+    _PROVIDER_SPECIFIC_FIELD_KEYS = _CORE_TOKEN_FIELD_KEYS + _MOE_FIELD_KEYS
 
     def __init__(self, llm: "LLM") -> None:
         self.ng_server_client = ServerClient(
@@ -77,6 +82,50 @@ class NemoGymClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _as_moe_history_elems(value: Any) -> list[Any]:
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        return [value]
+
+    @classmethod
+    def _normalize_request_messages(
+        cls, message_dicts: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        anchor_idx = -1
+        for idx in range(len(message_dicts) - 1, -1, -1):
+            if all(field in message_dicts[idx] for field in cls._CORE_TOKEN_FIELD_KEYS):
+                anchor_idx = idx
+                break
+
+        if anchor_idx < 0:
+            return message_dicts
+
+        moe_history: dict[str, list[Any]] = {field: [] for field in cls._MOE_FIELD_KEYS}
+        moe_field_seen = {field: False for field in cls._MOE_FIELD_KEYS}
+        for idx in range(anchor_idx + 1):
+            message = message_dicts[idx]
+            is_anchor = idx == anchor_idx
+            if not is_anchor:
+                for field in cls._CORE_TOKEN_FIELD_KEYS:
+                    message.pop(field, None)
+            for field in cls._MOE_FIELD_KEYS:
+                if field not in message:
+                    continue
+                moe_field_seen[field] = True
+                moe_history[field].extend(cls._as_moe_history_elems(message[field]))
+                if not is_anchor:
+                    del message[field]
+
+        anchor_message = message_dicts[anchor_idx]
+        for field in cls._MOE_FIELD_KEYS:
+            if moe_field_seen[field]:
+                anchor_message[field] = moe_history[field]
+
+        return message_dicts
+
     async def _post_completion(
         self,
         messages: list["Message"],
@@ -85,7 +134,9 @@ class NemoGymClient:
     ) -> "ModelResponse":
         from openhands.llm.llm import ModelResponse
 
-        message_dicts = [m.model_dump() for m in messages]
+        message_dicts = self._normalize_request_messages(
+            [m.model_dump() for m in messages]
+        )
 
         params: dict = {
             "messages": message_dicts,
@@ -95,25 +146,6 @@ class NemoGymClient:
             params["tools"] = tools
         if request_kwargs:
             params.update({k: v for k, v in request_kwargs.items() if k not in ("messages", "tools")})
-
-        core_token_fields = [
-            "prompt_token_ids",
-            "generation_token_ids",
-            "generation_log_probs",
-        ]
-        fields_to_remove = core_token_fields + [
-            "prompt_moe_topk_indices",
-            "generation_moe_topk_indices",
-            "moe_metadata",
-        ]
-        last_occurrence_idx_seen = False
-        for message in reversed(message_dicts):
-            if last_occurrence_idx_seen:
-                for field in fields_to_remove:
-                    if field in message:
-                        del message[field]
-            elif all(field in message for field in core_token_fields):
-                last_occurrence_idx_seen = True
 
         # Measure per-call round-trip latency so it's surfaced in
         # `Metrics.response_latencies` (and therefore in the eval output.jsonl
@@ -162,6 +194,7 @@ class NemoGymClient:
         )
         _d = {
             "messages": [m.model_dump() for m in messages],
+            "request_messages": params.get("messages"),
             "response": model_response_json,
             "provider_specific_fields": provider_specific_fields,
             "kwargs": {
