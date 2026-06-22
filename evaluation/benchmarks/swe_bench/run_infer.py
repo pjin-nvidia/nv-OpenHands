@@ -193,6 +193,8 @@ def set_dataset_type(dataset_name: str) -> str:
         DATASET_TYPE = 'SWE-bench_Multilingual'
     elif 'swe-bench-ext' in name_lower:
         DATASET_TYPE = 'swe-bench-ext'
+    elif 'deepswe' in name_lower:
+        DATASET_TYPE = 'deepswe'
     else:
         DATASET_TYPE = 'SWE-bench'
 
@@ -208,7 +210,9 @@ AGENT_CLS_TO_FAKE_USER_RESPONSE_FN = {
 
 
 def _get_swebench_workspace_dir_name(instance: pd.Series) -> str:
-    if DATASET_TYPE == 'SWE-bench-Live':
+    if DATASET_TYPE in ('SWE-bench-Live', 'deepswe'):
+        # deepswe works in-place at /app and its instances carry no `version`
+        # field, so key the (unused) workspace name off the instance_id.
         return instance.instance_id
     else:
         return f'{instance.repo}__{instance.version}'.replace('/', '__')
@@ -569,13 +573,15 @@ def get_instance_docker_image(
             docker_image_prefix = 'docker.io/swebench/'
         elif DATASET_TYPE == 'SWE-rebench':
             docker_image_prefix = 'docker.io/swerebench/'
-        elif DATASET_TYPE in ['R2E-Gym', 'nv-internal-1', 'SWE-rebench-V2', 'swe-bench-ext']:
+        elif DATASET_TYPE in ['R2E-Gym', 'nv-internal-1', 'SWE-rebench-V2', 'swe-bench-ext', 'deepswe']:
             docker_image_prefix = 'UNAVAILABLE'
         elif DATASET_TYPE == 'SWE-bench_Multilingual':
             docker_image_prefix = 'docker.io/swebench/'
         else:
             pass
-        if DATASET_TYPE == 'swe-bench-ext':
+        if DATASET_TYPE in ('swe-bench-ext', 'deepswe'):
+            # These ids have no `__` repo/name separator and the image is supplied
+            # externally (SIF), so don't attempt to split.
             repo, name = instance_id, instance_id
         else:
             repo, name = instance_id.split('__')
@@ -1037,7 +1043,7 @@ source ~/.bashrc
         )
 
     # These dataset types operate directly in their repo dir, skipping the copy-to-workspace step.
-    SKIP_ENTRY_SCRIPT_TYPES = ('nv-internal-1', 'SWE-rebench-V2', 'SWE-Gym', 'R2E-Gym', 'swe-bench-ext')
+    SKIP_ENTRY_SCRIPT_TYPES = ('nv-internal-1', 'SWE-rebench-V2', 'SWE-Gym', 'R2E-Gym', 'swe-bench-ext', 'deepswe')
 
     if DATASET_TYPE not in SKIP_ENTRY_SCRIPT_TYPES:
         action = CmdRunAction(command=f'source /swe_util/{entry_script_path}')
@@ -1221,8 +1227,9 @@ def _get_workspace_path(
     if workspace_dir_name is None:
         workspace_dir_name = _get_swebench_workspace_dir_name(instance)
 
-    if DATASET_TYPE == "nv-internal-1":
-        # nv-internal-1 instances operate directly out of /app instead of /workspace.
+    if DATASET_TYPE in ("nv-internal-1", "deepswe"):
+        # nv-internal-1 and deepswe (Harbor) images clone the repo at /app and the
+        # agent operates there directly instead of /workspace.
         return "/app"
     if DATASET_TYPE == "swe-bench-ext":
         return "/workspace/repo"
