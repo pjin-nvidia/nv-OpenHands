@@ -2,6 +2,7 @@ import copy
 import os
 import time
 import warnings
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Callable, cast
 
@@ -383,6 +384,7 @@ class LLM(RetryMixin, DebugMixin):
                     category=DeprecationWarning,
                 )
                 resp: ModelResponse = self._completion_unwrapped(*args, **kwargs)
+                completion_timestamp = datetime.now(timezone.utc).isoformat()
 
                 # Restore the removed token fields to messages
                 for i, fields in removed_fields.items():
@@ -395,7 +397,9 @@ class LLM(RetryMixin, DebugMixin):
             # Calculate and record latency
             latency = time.perf_counter() - start_time
             response_id = resp.get('id', 'unknown')
-            self.metrics.add_response_latency(latency, response_id)
+            self.metrics.add_response_latency(
+                latency, response_id, timestamp=completion_timestamp
+            )
 
             # Extract provider_specific_fields from the response
             if hasattr(resp.choices[0].message, 'provider_specific_fields'):
