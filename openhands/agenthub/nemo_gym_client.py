@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from openhands.core.logger import openhands_logger as logger
@@ -110,14 +111,41 @@ class NemoGymClient:
         await raise_for_status(model_response)
         model_response_json = await get_response_json(model_response)
         latency = time.perf_counter() - latency_start
+        completion_timestamp = datetime.now(timezone.utc).isoformat()
+        response_id = model_response_json.get("id", "unknown")
         self.llm.metrics.add_response_latency(
-            latency, model_response_json.get("id", "unknown")
+            latency, response_id, timestamp=completion_timestamp
+        )
+
+        response_message_dict = model_response_json["choices"][0]["message"]
+        usage = model_response_json.get("usage") or {}
+        prompt_token_details = usage.get("prompt_tokens_details") or {}
+        prompt_token_ids = response_message_dict.get("prompt_token_ids") or []
+        generation_token_ids = response_message_dict.get("generation_token_ids") or []
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        self.llm.metrics.add_token_usage(
+            prompt_tokens=(
+                prompt_tokens if prompt_tokens is not None else len(prompt_token_ids)
+            ),
+            completion_tokens=(
+                completion_tokens
+                if completion_tokens is not None
+                else len(generation_token_ids)
+            ),
+            cache_read_tokens=(
+                prompt_token_details.get("cached_tokens", 0)
+                if isinstance(prompt_token_details, dict)
+                else 0
+            ),
+            cache_write_tokens=0,
+            context_window=0,
+            response_id=response_id,
         )
         self.model_server_cookies = model_response.cookies
 
         response: ModelResponse = ModelResponse.model_validate(model_response_json)
 
-        response_message_dict = model_response_json["choices"][0]["message"]
         provider_specific_fields: dict = {}
         if response_message_dict.get("prompt_token_ids"):
             provider_specific_fields = {
