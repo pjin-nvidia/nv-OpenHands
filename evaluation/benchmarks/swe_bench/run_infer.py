@@ -912,11 +912,12 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
         f'fi\n'
     )
 
-    # Timeout: 30 min. On real repos, in-place reset scales roughly with
-    # `git repack -Ad` (the dominant step). Measured on 40 real repos:
-    # pytest ~7s, django ~30s, kubernetes/rust/typescript ~2-5min. 30min
-    # is comfortable slack for even multi-million-commit repos.
-    obs = _run(reset_cmd, timeout=1800, label='deep reset in place')
+    # Timeout: 10 min. In-place reset scales roughly with `git repack -ad`
+    # (dominant step). Measured on 40 real repos: pytest ~1s, django ~5s,
+    # kubernetes/cpython <20s, react ~4s. 10 min is comfortable slack
+    # even at multi-million-commit scale; anything blowing past it is
+    # almost certainly a hang, not a slow-but-progressing repack.
+    obs = _run(reset_cmd, timeout=600, label='deep reset in place')
     ok = (
         isinstance(obs, CmdOutputObservation)
         and obs.exit_code == 0
