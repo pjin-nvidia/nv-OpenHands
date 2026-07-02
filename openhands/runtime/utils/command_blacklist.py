@@ -277,6 +277,144 @@ COMMAND_BLACKLIST: list[BlacklistEntry] = [
         ),
         description="Blocks git commands that reference origin/upstream/remotes/<name>",
     ),
+    # === git show ===
+    # `git show` can display the full contents (message + diff) of an
+    # arbitrary commit, tag, or object. If any post-base-commit object is
+    # still reachable, or a ref/SHA is supplied, this becomes a channel for
+    # reading the solution diff directly. Block the subcommand outright and
+    # steer the agent toward reading source files in the working tree.
+    # The negative lookbehind `(?<!["'=\w])` avoids matching `show` when it
+    # appears inside a flag value (e.g. `--grep="show"`).
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])show\b",
+        feedback=(
+            "ERROR: The `git show` command is not allowed.\n"
+            "`git show` can display the message and full diff of an arbitrary "
+            "commit or object, which could reveal the task's solution.\n\n"
+            "SUGGESTION: Read the relevant source files directly from the "
+            "working tree instead of inspecting commit contents."
+        ),
+        description="Blocks git show",
+    ),
+    # ==================================================================
+    # === Git history mining (reading the task's future/fix commit). ===
+    # ==================================================================
+    # The July 2026 anti-cheat audit of RL training rollouts found the
+    # dominant cheat was LOCAL git archaeology: `git log --all` /
+    # `--grep=#<issue>` to surface the fix commit that deep-reset failed
+    # to prune, then viewing/materializing it. These rules block every
+    # confirmed vector. None of these commands are needed to solve a SWE
+    # task from the base commit (plain `git log`, `git diff`, `git
+    # checkout <branch>` all remain allowed), and none are used by the
+    # harness itself (the deep-reset's `git reflog expire` and
+    # `rm -f .git/packed-refs` are explicitly carved out below).
+    # === git log / rev-list across hidden refs (--all/--branches/...) ===
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])(?:log|rev-list|shortlog)\b[^\n|;&]*(?:--(?:all|branches|remotes|walk-reflogs)\b|\s-g\b)",
+        feedback=(
+            "ERROR: Walking git history across all refs is not allowed.\n"
+            "`git log/rev-list --all/--branches/--remotes` can surface commits "
+            "that post-date this task's base commit, which would leak the "
+            "solution.\n\n"
+            "SUGGESTION: Use plain `git log` (ancestry of HEAD) if you need "
+            "history, and read source files in the working tree."
+        ),
+        description="Blocks git log/rev-list/shortlog with --all/--branches/--remotes/reflog-walk",
+    ),
+    # === git log --grep (searching history for the issue number) ===
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])(?:log|rev-list)\b[^\n|;&]*--grep",
+        feedback=(
+            "ERROR: Searching git history by commit message is not allowed.\n"
+            "`git log --grep` is used to locate the commit that fixes this "
+            "task's issue, which would leak the solution.\n\n"
+            "SUGGESTION: Solve the issue from the source code in the working "
+            "tree; do not search commit history for it."
+        ),
+        description="Blocks git log/rev-list --grep",
+    ),
+    # === git reflog (reading). The harness's own cleanup runs
+    # `git reflog expire ...`, hence the negative lookahead. ===
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])reflog\b(?!\s+(?:expire|delete)\b)",
+        feedback=(
+            "ERROR: Reading the git reflog is not allowed.\n"
+            "The reflog can expose pre-reset HEAD positions that post-date the "
+            "task's base commit, which would leak the solution.\n\n"
+            "SUGGESTION: Work from the current checkout state only."
+        ),
+        description="Blocks git reflog reads (expire/delete still allowed for cleanup)",
+    ),
+    # === Raw object archaeology: cat-file / fsck / pack tools / cherry(-pick) ===
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])(?:cat-file|fsck|verify-pack|unpack-objects|cherry(?:-pick)?)\b",
+        feedback=(
+            "ERROR: This git object-inspection command is not allowed.\n"
+            "`git cat-file`, `git fsck`, pack inspection, and `git cherry(-pick)` "
+            "can read or apply commits that post-date the task's base commit, "
+            "which would leak the solution.\n\n"
+            "SUGGESTION: Read and edit the source files in the working tree "
+            "directly."
+        ),
+        description="Blocks git cat-file/fsck/verify-pack/unpack-objects/cherry/cherry-pick",
+    ),
+    # === Probing whether a commit is in the future (merge-base / --contains) ===
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])(?:merge-base\b[^\n|;&]*--is-ancestor|(?:branch|tag|for-each-ref)\b[^\n|;&]*--contains\b)",
+        feedback=(
+            "ERROR: Probing commit ancestry is not allowed.\n"
+            "`git merge-base --is-ancestor` and `--contains` are used to test "
+            "whether a commit post-dates the task's base commit before reading "
+            "it — a step in looking up the solution.\n\n"
+            "SUGGESTION: You do not need commit-ancestry information to solve "
+            "this task."
+        ),
+        description="Blocks merge-base --is-ancestor and branch/tag/for-each-ref --contains",
+    ),
+    # === Materializing a commit by raw hash (checkout/switch/reset/restore).
+    # The harness's own reset uses `git checkout "$BASE"` (a shell variable,
+    # not a raw hex literal), so it does not match. ===
+    # The hex token is guarded on both sides so hex-looking FILE names
+    # (e.g. `git checkout -- src/abcdef12.js`) do not match.
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])(?:checkout|switch|reset|restore)\b[^\n|;&]*(?<![\w/.\-])[0-9a-f]{7,40}(?![\w/.\-])",
+        feedback=(
+            "ERROR: Checking out / resetting to a raw commit hash is not allowed.\n"
+            "Materializing an arbitrary commit can bring the task's future fix "
+            "into the working tree, which would leak the solution.\n\n"
+            "SUGGESTION: Stay on the current branch. Use `git checkout <branch>` "
+            "or `git reset --hard HEAD` if you need to discard changes."
+        ),
+        description="Blocks git checkout/switch/reset/restore targeting a raw commit hash",
+    ),
+    # === git diff between two commits (range/caret/two hashes) ===
+    # Hex tokens are path-guarded; single-hash `git diff <base>` (reviewing
+    # your own changes against a known commit) stays allowed.
+    BlacklistEntry(
+        pattern=r"\bgit\b[^\n|;&]*?(?<![\"'=\w])diff\b[^\n|;&]*(?<![\w/.\-])[0-9a-f]{7,40}(?:\.\.\.?|\^|[^\n|;&]*?\s(?<![\w/.\-])[0-9a-f]{7,40}(?![\w/.\-]))",
+        feedback=(
+            "ERROR: Diffing between two raw commits is not allowed.\n"
+            "`git diff <hash>..<hash>` / `<hash>^` can display the full patch of "
+            "an arbitrary commit, which could reveal the task's solution.\n\n"
+            "SUGGESTION: Use plain `git diff` (or `git diff HEAD`) to review "
+            "your own changes."
+        ),
+        description="Blocks git diff between two raw commit hashes (range/caret forms)",
+    ),
+    # === Reading git internals directly (reader commands only — the
+    # harness's cleanup `rm -f .git/packed-refs` etc. must stay allowed). ===
+    BlacklistEntry(
+        pattern=r"\b(?:cat|less|more|head|tail|grep|egrep|fgrep|rg|find|ls|xxd|od|strings|sed|awk|cut|sort|uniq|tr|nl|tac|rev|tee|cp|dd|python[\d.]*|perl|ruby|node|vi|vim|nano|emacs)\b[^\n|;&]*\.git/(?:logs\b|packed-refs\b|ORIG_HEAD\b|FETCH_HEAD\b|refs/)",
+        feedback=(
+            "ERROR: Reading git internals directly is not allowed.\n"
+            "Files under `.git/` (logs, packed-refs, ORIG_HEAD, refs) can expose "
+            "commits that post-date the task's base commit, which would leak the "
+            "solution.\n\n"
+            "SUGGESTION: Use regular git commands against HEAD and read source "
+            "files in the working tree."
+        ),
+        description="Blocks reading .git/logs, .git/packed-refs, .git/ORIG_HEAD, .git/FETCH_HEAD, .git/refs",
+    ),
     # ==================================================================
     # === Online solution lookups via curl / wget. =====================
     # ==================================================================

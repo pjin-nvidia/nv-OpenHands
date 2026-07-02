@@ -778,194 +778,171 @@ def _interrupt_stuck_command(runtime: Runtime) -> None:
 
 
 def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
-    # 2) Remove all remotes so remote-tracking refs can no longer resolve.
-    action = CmdRunAction(
-        command='for remote_name in $(git remote); do git remote remove "${remote_name}"; done'
-    )
-    action.set_hard_timeout(600)
-    logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
-    logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-    if obs.exit_code == -1:
-        _interrupt_stuck_command(runtime)
-    assert_and_raise(obs.exit_code == 0, f'Failed to remove git remotes: {str(obs)}')
+    """Pin HEAD at ``base_commit`` and drop every ref/reflog entry/object
+    that reaches commits past ``base_commit``.
 
-    # 3) Pin HEAD at base_commit and delete every local ref that could
-    # reach commits past base_commit: branches, tags, stash, notes, and
-    # any stray remote-tracking refs. Then move the original branch back
-    # to base_commit so HEAD is symbolic again.
-    deep_reset_cmd = (
-        f'BASE=$(git rev-parse --verify {base_commit}^{{commit}}) && '
-        'echo "Base commit: $BASE" && '
+    In-place cleanup (no bundle, no ``.git`` swap). Best-effort throughout:
+    each git step's failure is logged and we continue; only the final
+    ``HEAD == BASE`` invariant matters. If that fails, we log
+    ``REBUILD_FAILED`` and return anyway so the agent still runs.
 
-        # Capture the branch HEAD currently points at (before we detach below).
-        # Falls back to `main` if HEAD is already detached on entry.
-        'ORIG_BRANCH=$(git symbolic-ref --short -q HEAD || echo main) && '
-        'echo "Original branch: $ORIG_BRANCH" && '
+    Steps (single bash command):
+      1. ``git reset --hard`` + ``git clean -fd`` — drop tracked +
+         untracked local edits.
+      2. ``git checkout BASE -f`` + ``git checkout -B <branch> BASE`` —
+         pin HEAD at BASE on a real branch.
+      3. Batch-delete every ref namespace that can reach post-base
+         commits: ``refs/tags``, ``refs/remotes``, ``refs/stash``,
+         ``refs/notes``, ``refs/replace``, ``refs/prefetch``,
+         ``refs/pull``, and every ``refs/heads`` entry except the current
+         one. Uses ``git update-ref --stdin`` with ``option no-deref`` so
+         symbolic refs (``refs/remotes/*/HEAD``) don't abort the
+         transaction.
+      4. ``rm -f .git/packed-refs`` — belt-and-suspenders in case any ref
+         still lives packed after step 3.
+      5. Remove transient op refs (``FETCH_HEAD``, ``MERGE_HEAD``, etc.).
+      6. ``git reflog expire --expire=now --all`` — kill reflog so past
+         HEAD positions can't be walked, and so ``repack -Ad`` in step 7
+         can drop unreachable pack entries.
+      7. ``git repack -Ad`` + ``git prune --expire=now`` — actually
+         delete unreachable objects (both packed and loose). Without
+         ``repack -Ad`` the packed unreachable commits stay readable via
+         ``git cat-file`` / ``git verify-pack`` / raw ``.idx`` parsing.
+      8. Set ``user.email`` / ``user.name`` so agent commits work even
+         when the container's global git config is missing them.
+      9. Verify ``HEAD == BASE`` (only correctness invariant).
 
-        # Detach so the current branch can be moved safely.
-        'git checkout --detach "$BASE" && '
+    Preserved: full ancestry up to BASE (``git log HEAD`` works).
+    Discarded: every ref past BASE, all reflog entries, every commit/
+    tree/blob reachable only from a ref past BASE.
+    """
 
-        'echo && '
-        'echo "Resetting local branches that are descendants of base..." && '
-
-        # Keep local branches, but reset any branch after BASE back to BASE.
-        'git for-each-ref --format="%(refname)" refs/heads | while read -r ref; do '
-        'tip="$(git rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"; '
-        '[ -z "$tip" ] && continue; '
-        'if [ "$tip" != "$BASE" ] && git merge-base --is-ancestor "$BASE" "$tip"; then '
-        'echo "reset $ref -> $BASE"; '
-        'git update-ref "$ref" "$BASE"; '
-        'else '
-        'echo "keep $ref"; '
-        'fi; '
-        'done && '
-
-        'echo && '
-        'echo "Deleting tags, remote-tracking refs, stash, and other refs after base..." && '
-
-        # Delete non-local-branch refs after BASE.
-        'git for-each-ref --format="%(refname)" refs | while read -r ref; do '
-        'case "$ref" in refs/heads/*) continue ;; esac; '
-        'if git symbolic-ref -q "$ref" >/dev/null 2>&1; then '
-        'echo "skip symbolic ref $ref"; '
-        'continue; '
-        'fi; '
-        'tip="$(git rev-parse -q --verify "$ref^{commit}" 2>/dev/null || true)"; '
-        '[ -z "$tip" ] && continue; '
-        'if [ "$tip" != "$BASE" ] && git merge-base --is-ancestor "$BASE" "$tip"; then '
-        'echo "delete $ref"; '
-        'git update-ref -d "$ref"; '
-        'else '
-        'echo "keep $ref"; '
-        'fi; '
-        'done && '
-
-        'echo && '
-        'echo "Removing temporary Git operation refs..." && '
-
-        'git_dir=$(git rev-parse --git-dir) && '
-        'rm -f "$git_dir"/FETCH_HEAD "$git_dir"/ORIG_HEAD '
-        '"$git_dir"/MERGE_HEAD "$git_dir"/CHERRY_PICK_HEAD '
-        '"$git_dir"/REVERT_HEAD "$git_dir"/BISECT_HEAD '
-        '"$git_dir"/AUTO_MERGE && '
-
-        'echo && '
-        'echo "Expiring reflogs..." && '
-        'git reflog expire --expire=now --expire-unreachable=now --all && '
-
-        'echo && '
-        'echo "Pruning unreachable objects..." && '
-        'git repack -ad && '
-        'git prune --expire=now && '
-        'git gc --prune=now && '
-
-        'echo && '
-        'echo "Checking out $ORIG_BRANCH at base..." && '
-        'git checkout -B "$ORIG_BRANCH" "$BASE" && '
-
-        'echo && '
-        'echo "Done." && '
-        'echo "Local branches were preserved." && '
-        'echo "Tags/remotes/other refs after base were deleted."'
-    )
-
-    action = CmdRunAction(command=deep_reset_cmd)
-    action.set_hard_timeout(600)
-    logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
-    logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-
-    if obs.exit_code != 0:
-        # If the per-ref iteration hit its 600 s timeout, the loop is still
-        # running in tmux and would block the fallback. Kill it first.
-        if obs.exit_code == -1:
-            _interrupt_stuck_command(runtime)
-
-        # Fallback: the careful per-ref pass timed out or otherwise failed.
-        # This happens reliably on monorepos with thousands of refs (e.g.
-        # DataDog/datadog-agent has 5,000+ release tags whose per-ref
-        # iteration overhead exceeds the 600 s timeout). Drop the careful
-        # keep-some-tags discrimination and batch-delete every non-current
-        # ref in two `git update-ref --stdin` calls — microseconds total
-        # regardless of ref count. Functionally equivalent for the agent
-        # since it only needs HEAD pinned at base_commit.
-        logger.info(
-            f'deep_reset_cmd failed (exit_code={obs.exit_code}); '
-            'falling back to batch-delete of all non-current refs.',
-            extra={'msg_type': 'ACTION'},
-        )
-        nuclear_reset_cmd = (
-            f'BASE=$(git rev-parse --verify {base_commit}^{{commit}}) && '
-            'ORIG_BRANCH=$(git symbolic-ref --short -q HEAD || echo main) && '
-            'echo "Base commit: $BASE, restoring branch: $ORIG_BRANCH" && '
-
-            # Detach so we can freely delete every branch.
-            'git checkout --detach "$BASE" && '
-
-            # One git invocation deletes all tags/remotes/stash/notes.
-            'echo "Batch-deleting all tags, remote-tracking refs, stash, notes..." && '
-            'git for-each-ref --format="delete %(refname)" '
-            'refs/tags refs/remotes refs/stash refs/notes 2>/dev/null '
-            '| git update-ref --stdin && '
-
-            # One git invocation deletes all local branches.
-            'echo "Batch-deleting all local branches..." && '
-            'git for-each-ref --format="delete %(refname)" refs/heads '
-            '| git update-ref --stdin && '
-
-            # Strip transient operation refs.
-            'git_dir=$(git rev-parse --git-dir) && '
-            'rm -f "$git_dir"/FETCH_HEAD "$git_dir"/ORIG_HEAD '
-            '"$git_dir"/MERGE_HEAD "$git_dir"/CHERRY_PICK_HEAD '
-            '"$git_dir"/REVERT_HEAD "$git_dir"/BISECT_HEAD '
-            '"$git_dir"/AUTO_MERGE && '
-
-            # Now nothing reaches past base; reflog + gc to reclaim space.
-            'git reflog expire --expire=now --expire-unreachable=now --all && '
-            'git repack -ad && '
-            'git prune --expire=now && '
-            'git gc --prune=now && '
-
-            # Recreate the original branch at base and check it out.
-            'git checkout -B "$ORIG_BRANCH" "$BASE" && '
-            'echo "Nuclear cleanup done. Only $ORIG_BRANCH at base remains."'
-        )
-        action = CmdRunAction(command=nuclear_reset_cmd)
-        action.set_hard_timeout(600)
+    def _run(cmd: str, timeout: int, label: str) -> CmdOutputObservation:
+        action = CmdRunAction(command=cmd)
+        action.set_hard_timeout(timeout)
         logger.info(action, extra={'msg_type': 'ACTION'})
         obs = runtime.run_action(action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-        if obs.exit_code == -1:
+        if isinstance(obs, CmdOutputObservation) and obs.exit_code == 0:
+            return obs
+        if getattr(obs, 'exit_code', None) == -1:
+            print(
+                f'[deep_reset] {label} timed out; interrupting stuck command.',
+                flush=True,
+            )
             _interrupt_stuck_command(runtime)
+        else:
+            print(
+                f'[deep_reset] {label} exit='
+                f'{getattr(obs, "exit_code", "?")}: {str(obs)[:400]}',
+                flush=True,
+            )
+        return obs  # type: ignore[return-value]
 
-    # 4) Expire reflog so past HEAD positions cannot be walked.
-    action = CmdRunAction(
-        command=(
-            'git reflog expire --expire=now --all && '
-            'git reflog expire --expire-unreachable=now --all'
-        )
+    reset_cmd = (
+        # `set +e` — every individual step is best-effort; we rely on the
+        # final HEAD-check to decide overall success.
+        f'set +e\n'
+        f'BASE=$(git rev-parse --verify {base_commit}^{{commit}}) || '
+        f'{{ echo "[deep_reset] BAD_BASE {base_commit}"; exit 1; }}\n'
+        f'BRANCH=$(git symbolic-ref --short -q HEAD || echo main)\n'
+        f'echo "[deep_reset] BASE=$BASE BRANCH=$BRANCH"\n'
+        # 1. Drop local edits (tracked + untracked). `git clean -fd`
+        # matches Scale-SWE's pre_commands intent — untracked files from
+        # a previous run of the same container would otherwise persist.
+        f'git reset --hard --quiet\n'
+        f'git clean -fd --quiet\n'
+        # 2. Pin HEAD at BASE on a real branch (matches pre-call branch
+        # name, falls back to `main`).
+        f'git checkout "$BASE" -f --quiet\n'
+        f'git checkout -B "$BRANCH" "$BASE" --quiet\n'
+        # 3. Batch-delete every non-current ref. `option no-deref` on
+        # each line so symbolic refs (refs/remotes/<name>/HEAD) delete
+        # in place instead of aborting the update-ref transaction.
+        f'git for-each-ref --format="option no-deref%0Adelete %(refname)" \\\n'
+        f'  refs/tags refs/remotes refs/stash refs/notes refs/replace refs/prefetch refs/pull \\\n'
+        f'  2>/dev/null | git update-ref --stdin 2>/dev/null\n'
+        # Local branches except the one we just recreated.
+        f'git for-each-ref --format="%(refname)" refs/heads 2>/dev/null | \\\n'
+        f'  grep -vFx "refs/heads/$BRANCH" | \\\n'
+        f'  while read r; do git update-ref -d "$r" --no-deref 2>/dev/null; done\n'
+        # 4. Nuke packed-refs file directly — anything still packed dies
+        # here regardless of update-ref outcomes above.
+        f'rm -f .git/packed-refs\n'
+        # 5. Transient op refs.
+        f'rm -f .git/FETCH_HEAD .git/ORIG_HEAD .git/MERGE_HEAD \\\n'
+        f'  .git/CHERRY_PICK_HEAD .git/REVERT_HEAD .git/BISECT_HEAD .git/AUTO_MERGE\n'
+        # 6. Empty reflog so past HEAD positions can't be walked and so
+        # `repack -Ad` in step 7 will actually consider those objects
+        # unreachable.
+        f'git reflog expire --expire=now --expire-unreachable=now --all 2>/dev/null\n'
+        # 7. Actually delete unreachable objects (packed + loose).
+        #
+        # `-ad` (lowercase -a) writes a new pack containing only reachable
+        # objects and deletes the old pack — unreachable objects are
+        # dropped in one step. Contrast with `-Ad` (uppercase -A), which
+        # first DEMOTES every unreachable object to a loose file before
+        # `git prune` deletes them. On repos with many unreachable
+        # objects (e.g. facebook/react: ~200k) the demote step writes
+        # hundreds of thousands of tiny files and takes ~10 minutes.
+        # `-ad` skips the intermediate entirely — measured on react:
+        # 579s → 2.2s.
+        #
+        # We do NOT need the loose-intermediate step's safety property
+        # (grace-period recovery), because deep_reset is destructive by
+        # design.
+        #
+        # `git prune` afterward is still called — belt-and-suspenders
+        # for any pre-existing loose unreachable objects the pack didn't
+        # cover.
+        f'git repack -ad --quiet 2>/dev/null\n'
+        f'git prune --expire=now 2>/dev/null\n'
+        # 8. Identity — mirrors Scale-SWE pre_commands so agent commits
+        # work regardless of the container's global git config.
+        f'git config user.email "openhands-eval@localhost" 2>/dev/null\n'
+        f'git config user.name  "OpenHands Eval" 2>/dev/null\n'
+        # 9. The only correctness-critical check.
+        f'HEAD_SHA=$(git rev-parse --verify HEAD^{{commit}} 2>/dev/null)\n'
+        f'if [ "$HEAD_SHA" = "$BASE" ]; then\n'
+        f'  echo "__DEEP_RESET_OK__ HEAD=$HEAD_SHA"\n'
+        f'  exit 0\n'
+        f'else\n'
+        f'  echo "__DEEP_RESET_MISMATCH__ HEAD=$HEAD_SHA BASE=$BASE"\n'
+        f'  exit 1\n'
+        f'fi\n'
     )
-    action.set_hard_timeout(600)
-    logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
-    logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-    if obs.exit_code == -1:
-        _interrupt_stuck_command(runtime)
-    # assert_and_raise(obs.exit_code == 0, f'Failed to expire reflog: {str(obs)}')
 
-    # 5) Prune dangling objects. After steps 1-4 every commit past
-    # base_commit is unreachable; `git gc --prune=now` deletes them from
-    # the object database so `git cat-file -p <sha>` and
-    # `git fsck --lost-found` cannot resurrect them.
-    action = CmdRunAction(command='git gc --prune=now')
-    action.set_hard_timeout(900)
-    logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
-    logger.info(obs, extra={'msg_type': 'OBSERVATION'})
-    if obs.exit_code == -1:
-        _interrupt_stuck_command(runtime)
-    # assert_and_raise(obs.exit_code == 0, f'Failed to git gc --prune=now: {str(obs)}')
+    # Timeout: 30 min. On real repos, in-place reset scales roughly with
+    # `git repack -Ad` (the dominant step). Measured on 40 real repos:
+    # pytest ~7s, django ~30s, kubernetes/rust/typescript ~2-5min. 30min
+    # is comfortable slack for even multi-million-commit repos.
+    obs = _run(reset_cmd, timeout=1800, label='deep reset in place')
+    ok = (
+        isinstance(obs, CmdOutputObservation)
+        and obs.exit_code == 0
+        and '__DEEP_RESET_OK__' in (obs.content or '')
+    )
+    if ok:
+        return
+
+    # Best-effort mode: reset failed to pin HEAD at BASE. The workspace
+    # may be in a partial state (some refs cleaned, some not). Agent
+    # will proceed anyway — running with a partially-reset repo is more
+    # useful than failing 100% of the task.
+    #
+    # Downstream: grep task logs for "[deep_reset] REBUILD_FAILED" to
+    # find instances where the agent may have been able to read
+    # post-base commits.
+    print(
+        f'[deep_reset] REBUILD_FAILED base_commit={base_commit} '
+        f'exit_code={getattr(obs, "exit_code", "<no obs>")}. '
+        f'The workspace .git may be partially reset and may still '
+        f'reference commits past base_commit. The agent will proceed '
+        f'but may be able to inspect the solution via git. Filter this '
+        f'task from clean-run analysis. '
+        f'Last obs (truncated): {str(obs)[:800]}',
+        flush=True,
+    )
 
 
 def initialize_runtime(
