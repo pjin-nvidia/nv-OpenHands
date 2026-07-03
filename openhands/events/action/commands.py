@@ -22,6 +22,16 @@ class CmdRunAction(Action):
     hidden: bool = (
         False  # if True, this command does not go through the LLM or event stream
     )
+    # Trusted-harness escape hatch for the command blacklist. Defaults to
+    # False (fail-closed): the anti-cheat blacklist is enforced on every
+    # command unless the harness itself explicitly opts a command out. The
+    # agent can never set this — its actions are built by the function-call
+    # parser, which only populates `command`/`thought`/etc. — so this cannot
+    # be used to bypass the blacklist during the agent rollout. It exists so
+    # the harness's own setup/reset commands (e.g. the deep-reset's
+    # `git merge-base --is-ancestor`) are not blocked by rules meant to
+    # constrain the agent.
+    bypass_blacklist: bool = False
     action: str = ActionType.RUN
     runnable: ClassVar[bool] = True
     confirmation_state: ActionConfirmationStatus = ActionConfirmationStatus.CONFIRMED

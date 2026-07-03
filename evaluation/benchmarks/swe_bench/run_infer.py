@@ -714,6 +714,24 @@ def get_config(
     return config
 
 
+def _run_harness_action(runtime: Runtime, action):
+    """Run a harness-owned action, exempt from the anti-cheat blacklist.
+
+    All commands issued directly by the harness (runtime setup, deep-reset,
+    binary-patch scaffolding, completion) are trusted and must not be subject
+    to the command blacklist that constrains the agent's rollout — otherwise
+    harness git plumbing like `git merge-base --is-ancestor` is blocked and
+    the runtime returns an ``ErrorObservation`` (no ``exit_code``), crashing
+    the instance. Setting ``bypass_blacklist`` is safe because the agent's
+    own actions are constructed by the function-call parser and can never set
+    this flag. Non-command actions (e.g. FileReadAction) don't hit the
+    blacklist, so we only tag CmdRunActions.
+    """
+    if isinstance(action, CmdRunAction):
+        action.bypass_blacklist = True
+    return runtime.run_action(action)
+
+
 def _interrupt_stuck_command(runtime: Runtime) -> None:
     """Free the tmux session when a previous command timed out but is still running.
 
@@ -738,20 +756,20 @@ def _interrupt_stuck_command(runtime: Runtime) -> None:
         # is genuinely free to accept new commands.
         probe = CmdRunAction(command='true')
         probe.set_hard_timeout(15)
-        obs = runtime.run_action(probe)
+        obs = _run_harness_action(runtime, probe)
         return isinstance(obs, CmdOutputObservation) and obs.exit_code == 0
 
     logger.info(
         'Previous command timed out and is still running; '
         'sending C-c (is_input=True) to interrupt...'
     )
-    runtime.run_action(CmdRunAction(command='C-c', is_input=True))
+    _run_harness_action(runtime, CmdRunAction(command='C-c', is_input=True))
     if _shell_responsive():
         return
 
     logger.info('First C-c did not free the shell; sending C-c x4...')
     for _ in range(4):
-        runtime.run_action(CmdRunAction(command='C-c', is_input=True))
+        _run_harness_action(runtime, CmdRunAction(command='C-c', is_input=True))
     if _shell_responsive():
         return
 
@@ -759,14 +777,14 @@ def _interrupt_stuck_command(runtime: Runtime) -> None:
         'Repeated C-c did not free the shell; sending C-z to suspend and '
         'kill -9 %% to terminate the suspended job...'
     )
-    runtime.run_action(CmdRunAction(command='C-z', is_input=True))
+    _run_harness_action(runtime, CmdRunAction(command='C-z', is_input=True))
     # After C-z the foreground job is stopped and the shell prompt returns,
     # so a normal (non-is_input) command goes through. `%%` is bash's
     # "current job" — always the most recently suspended/backgrounded one,
     # so it picks our suspended job regardless of any other jobs that might
     # be lingering in the session. Suppress kill's "no such job" error if
     # the suspend was actually a clean exit.
-    runtime.run_action(CmdRunAction(command='kill -9 %% 2>/dev/null; true'))
+    _run_harness_action(runtime, CmdRunAction(command='kill -9 %% 2>/dev/null; true'))
     if _shell_responsive():
         return
 
@@ -784,7 +802,7 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
     )
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if obs.exit_code == -1:
         _interrupt_stuck_command(runtime)
@@ -873,7 +891,7 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
     action = CmdRunAction(command=deep_reset_cmd)
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     if obs.exit_code != 0:
@@ -934,7 +952,7 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
         action = CmdRunAction(command=nuclear_reset_cmd)
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         if obs.exit_code == -1:
             _interrupt_stuck_command(runtime)
@@ -948,7 +966,7 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
     )
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if obs.exit_code == -1:
         _interrupt_stuck_command(runtime)
@@ -961,7 +979,7 @@ def _deep_reset_to_base_commit(runtime: Runtime, base_commit: str) -> None:
     action = CmdRunAction(command='git gc --prune=now')
     action.set_hard_timeout(900)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if obs.exit_code == -1:
         _interrupt_stuck_command(runtime)
@@ -998,7 +1016,7 @@ source ~/.bashrc
     action = CmdRunAction(command=initial_setup_cmd.strip())
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         obs.exit_code == 0,
@@ -1049,7 +1067,7 @@ source ~/.bashrc
         action = CmdRunAction(command=f'source /swe_util/{entry_script_path}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(
             obs.exit_code == 0,
@@ -1067,7 +1085,7 @@ source ~/.bashrc
         )
         action.set_hard_timeout(120)
         logger.info(action, extra={"msg_type": "ACTION"})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={"msg_type": "OBSERVATION"})
         assert_and_raise(
             obs.exit_code == 0,
@@ -1083,7 +1101,7 @@ source ~/.bashrc
         )
         action.set_hard_timeout(120)
         logger.info(action, extra={"msg_type": "ACTION"})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={"msg_type": "OBSERVATION"})
         assert_and_raise(
             obs.exit_code == 0,
@@ -1099,7 +1117,7 @@ source ~/.bashrc
         )
         action.set_hard_timeout(600)
         logger.info(action, extra={"msg_type": "ACTION"})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={"msg_type": "OBSERVATION"})
         assert_and_raise(
             obs.exit_code == 0,
@@ -1109,7 +1127,7 @@ source ~/.bashrc
     action = CmdRunAction(command=f'cd {workspace_path}')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         obs.exit_code == 0,
@@ -1128,7 +1146,7 @@ source ~/.bashrc
         action = CmdRunAction(command='git reset --hard')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(obs.exit_code == 0, f'Failed to git reset --hard: {str(obs)}')
 
@@ -1163,7 +1181,7 @@ source ~/.bashrc
         action = CmdRunAction(command=baseline_cmd)
         action.set_hard_timeout(1800)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(
             isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1200,7 +1218,7 @@ source ~/.bashrc
             action = CmdRunAction(command=command)
             action.set_hard_timeout(600)
             logger.info(action, extra={'msg_type': 'ACTION'})
-            obs = runtime.run_action(action)
+            obs = _run_harness_action(runtime, action)
             logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     if DATASET_TYPE not in ('Multimodal', 'SWE-bench-Live', 'nv-internal-1', 'SWE-rebench', 'SWE-rebench-V2', 'SWE-bench_Multilingual', 'swe-bench-ext'):
@@ -1209,7 +1227,7 @@ source ~/.bashrc
         action = CmdRunAction(command='which python')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         assert_and_raise(
             obs.exit_code == 0 and 'testbed' in obs.content,
@@ -1262,7 +1280,7 @@ def complete_runtime(
     action = CmdRunAction(command=f'cd {workspace_path}')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     if obs.exit_code == -1:
@@ -1271,13 +1289,13 @@ def complete_runtime(
         # instead of being rejected by the "previous command still running" guard.
         logger.info('The previous command is still running, sending C-c (is_input=True)...')
         action = CmdRunAction(command='C-c', is_input=True)
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
         action = CmdRunAction(command=f'cd {workspace_path}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     if obs.exit_code == -1:
@@ -1285,15 +1303,15 @@ def complete_runtime(
         # need two SIGINTs: the first triggers graceful shutdown, the second aborts).
         logger.info('C-c failed, sending C-c twice...')
         action = CmdRunAction(command='C-c', is_input=True)
-        runtime.run_action(action)
+        _run_harness_action(runtime, action)
         action = CmdRunAction(command='C-c', is_input=True)
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
         action = CmdRunAction(command=f'cd {workspace_path}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     if obs.exit_code == -1:
@@ -1301,13 +1319,13 @@ def complete_runtime(
         # If the process suspends, the shell returns a prompt and we can proceed.
         logger.info('Multiple C-c failed, sending C-z (is_input=True) to suspend...')
         action = CmdRunAction(command='C-z', is_input=True)
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
         action = CmdRunAction(command=f'cd {workspace_path}')
         action.set_hard_timeout(600)
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
 
     assert_and_raise(
@@ -1318,7 +1336,7 @@ def complete_runtime(
     action = CmdRunAction(command='git config --global core.pager ""')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1334,7 +1352,7 @@ def complete_runtime(
     action = CmdRunAction(command='git rev-parse --is-inside-work-tree')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     is_git_repo = (
         isinstance(obs, CmdOutputObservation)
@@ -1360,7 +1378,7 @@ def complete_runtime(
     )
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     if (
         isinstance(obs, CmdOutputObservation)
@@ -1379,7 +1397,7 @@ def complete_runtime(
     action = CmdRunAction(command='find . -type d -name .git -not -path "./.git"')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1393,7 +1411,7 @@ def complete_runtime(
             action = CmdRunAction(command=f'rm -rf "{git_dir}"')
             action.set_hard_timeout(600)
             logger.info(action, extra={'msg_type': 'ACTION'})
-            obs = runtime.run_action(action)
+            obs = _run_harness_action(runtime, action)
             logger.info(obs, extra={'msg_type': 'OBSERVATION'})
             assert_and_raise(
                 isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1414,7 +1432,7 @@ def complete_runtime(
             action = CmdRunAction(command=f'chmod +x /tmp/{script_name} && /tmp/{script_name}')
             action.set_hard_timeout(600)
             logger.info(action, extra={'msg_type': 'ACTION'})
-            obs = runtime.run_action(action)
+            obs = _run_harness_action(runtime, action)
             logger.info(obs, extra={'msg_type': 'OBSERVATION'})
             assert_and_raise(
                 obs.exit_code == 0,
@@ -1429,7 +1447,7 @@ def complete_runtime(
     action = CmdRunAction(command='git add -A')
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1440,7 +1458,7 @@ def complete_runtime(
     action = CmdRunAction(command=remove_binary_files_from_git())
     action.set_hard_timeout(600)
     logger.info(action, extra={'msg_type': 'ACTION'})
-    obs = runtime.run_action(action)
+    obs = _run_harness_action(runtime, action)
     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
     assert_and_raise(
         isinstance(obs, CmdOutputObservation) and obs.exit_code == 0,
@@ -1458,7 +1476,7 @@ def complete_runtime(
         )
         action.set_hard_timeout(max(300 + 100 * n_retries, 600))
         logger.info(action, extra={'msg_type': 'ACTION'})
-        obs = runtime.run_action(action)
+        obs = _run_harness_action(runtime, action)
         logger.info(obs, extra={'msg_type': 'OBSERVATION'})
         n_retries += 1
         if isinstance(obs, CmdOutputObservation):
@@ -1467,7 +1485,7 @@ def complete_runtime(
                 action = FileReadAction(path='patch.diff')
                 action.set_hard_timeout(max(300 + 100 * n_retries, 600))
                 logger.info(action, extra={'msg_type': 'ACTION'})
-                obs = runtime.run_action(action)
+                obs = _run_harness_action(runtime, action)
                 logger.info(obs, extra={'msg_type': 'OBSERVATION'})
                 if isinstance(obs, FileReadObservation):
                     git_patch = obs.content
@@ -1478,7 +1496,7 @@ def complete_runtime(
                     action = CmdRunAction(command='cat patch.diff')
                     action.set_hard_timeout(max(300 + 100 * n_retries, 600))
                     logger.info(action, extra={'msg_type': 'ACTION'})
-                    obs = runtime.run_action(action)
+                    obs = _run_harness_action(runtime, action)
                     assert isinstance(obs, CmdOutputObservation) and obs.exit_code == 0
                     logger.info(obs, extra={'msg_type': 'OBSERVATION'})
                     git_patch = obs.content
