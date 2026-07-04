@@ -331,17 +331,15 @@ class Runtime(FileEditRuntimeMixin):
 
             asyncio.get_event_loop().run_until_complete(self._handle_action(event))
 
-            import os, json
+            metrics_fpath = os.environ.get("NEMO_GYM_METRICS_FPATH")
+            if metrics_fpath:
+                from openhands.nemo_gym_metrics_utils import update_json_metrics_file
 
-            metrics_fpath = os.environ["NEMO_GYM_METRICS_FPATH"]
-            with open(metrics_fpath) as f:
-                existing_dict = json.loads(f.read())
-
-            exec_time_taken = existing_dict.get("total_command_exec_time", 0.0)
-            existing_dict["total_command_exec_time"] = exec_time_taken + time.time() - start_time
-
-            with open(metrics_fpath, "w") as f:
-                json.dump(existing_dict, f)
+                update_json_metrics_file(
+                    metrics_fpath,
+                    increments={"total_command_exec_time": time.time() - start_time},
+                    log_prefix="swe_agents",
+                )
 
     async def _export_latest_git_provider_tokens(self, event: Action) -> None:
         """Refresh runtime provider tokens when agent attemps to run action with provider token"""

@@ -151,18 +151,84 @@ class Profiler:
             f.write(res)
 
 
+def _warn_metrics(message: str) -> None:
+    print(f"WARNING: swe_agents: {message}", flush=True)
+
+
+def _update_json_metrics_file(metrics_fpath: str, update_dict: Dict[str, Any]) -> None:
+    metrics_path = Path(metrics_fpath)
+    lock_path = metrics_path.with_name(f".{metrics_path.name}.lockdir")
+    tmp_fpath: Path | None = None
+    acquired = False
+    deadline = time.monotonic() + 60.0
+
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        while not acquired:
+            try:
+                lock_path.mkdir()
+                acquired = True
+            except FileExistsError:
+                try:
+                    lock_age = time.time() - lock_path.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if lock_age > 300.0:
+                    shutil.rmtree(lock_path, ignore_errors=True)
+                    continue
+                if time.monotonic() > deadline:
+                    raise TimeoutError(f"Timed out waiting for metrics file lock at {lock_path}")
+                time.sleep(0.05)
+
+        existing_dict: dict[str, Any] = {}
+        if metrics_path.exists():
+            raw_metrics = metrics_path.read_text()
+            if raw_metrics.strip():
+                try:
+                    loaded = json.loads(raw_metrics)
+                    if isinstance(loaded, dict):
+                        existing_dict = loaded
+                    else:
+                        _warn_metrics(
+                            f"update_metrics: expected object in metrics file "
+                            f"(path={metrics_path}), got {type(loaded).__name__}; resetting metrics"
+                        )
+                except Exception as e:
+                    _warn_metrics(
+                        f"update_metrics: error reading metrics file "
+                        f"(path={metrics_path}): {type(e).__name__} {e}; resetting metrics"
+                    )
+
+        existing_dict = {k: v for k, v in existing_dict.items() if v is not None}
+        update_dict = {k: v for k, v in update_dict.items() if v is not None}
+
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{metrics_path.name}.",
+            suffix=f".tmp.{os.getpid()}",
+            dir=metrics_path.parent,
+            text=True,
+        )
+        tmp_fpath = Path(tmp_name)
+        with os.fdopen(fd, "w") as f:
+            json.dump(existing_dict | update_dict, f)
+        os.replace(tmp_fpath, metrics_path)
+    except Exception as e:
+        _warn_metrics(
+            f"update_metrics: error updating metrics file "
+            f"(path={metrics_path}): {type(e).__name__} {e}"
+        )
+        if tmp_fpath is not None:
+            tmp_fpath.unlink(missing_ok=True)
+    finally:
+        if acquired:
+            shutil.rmtree(lock_path, ignore_errors=True)
+
+
 def update_metrics(update_dict: Dict[str, Any]) -> None:
-    import os, json
-
-    metrics_fpath = os.environ["NEMO_GYM_METRICS_FPATH"]
-    with open(metrics_fpath) as f:
-        existing_dict = json.loads(f.read())
-
-    existing_dict = {k: v for k, v in existing_dict.items() if v is not None}
-    update_dict = {k: v for k, v in update_dict.items() if v is not None}
-
-    with open(metrics_fpath, "w") as f:
-        json.dump(existing_dict | update_dict, f)
+    metrics_fpath = os.environ.get("NEMO_GYM_METRICS_FPATH")
+    if metrics_fpath:
+        _update_json_metrics_file(metrics_fpath, update_dict)
 
 
 ########################################

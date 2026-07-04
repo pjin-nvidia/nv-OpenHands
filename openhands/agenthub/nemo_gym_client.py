@@ -161,14 +161,14 @@ class NemoGymClient:
 
     @staticmethod
     def _update_model_call_time(start_time: float) -> None:
-        metrics_fpath = os.environ["NEMO_GYM_METRICS_FPATH"]
-        with open(metrics_fpath) as f:
-            existing_dict = json.loads(f.read())
+        metrics_fpath = os.environ.get("NEMO_GYM_METRICS_FPATH")
+        if not metrics_fpath:
+            return
 
-        model_call_time_taken = existing_dict.get("total_model_call_time", 0.0)
-        existing_dict["total_model_call_time"] = (
-            model_call_time_taken + time.time() - start_time
+        from openhands.nemo_gym_metrics_utils import update_json_metrics_file
+
+        update_json_metrics_file(
+            metrics_fpath,
+            increments={"total_model_call_time": time.time() - start_time},
+            log_prefix="swe_agents",
         )
-
-        with open(metrics_fpath, "w") as f:
-            json.dump(existing_dict, f)
