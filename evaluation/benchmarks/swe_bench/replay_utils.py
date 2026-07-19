@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from openhands.core.logger import openhands_logger as logger
 from openhands.events.action.message import MessageAction
+from openhands.events.event import EventSource
 
 if TYPE_CHECKING:
     pass
@@ -303,6 +304,11 @@ def messages_to_replay_events(
                     actions = _terminus2_response_to_actions(content)
                     for action in actions:
                         action._id = None
+                        # AgentController._step() reads action._source when re-adding the
+                        # replayed action to the event stream. response_to_actions() does
+                        # not set this, so AGENT (the natural origin for assistant turns)
+                        # is supplied here.
+                        action._source = EventSource.AGENT
                         replay_events.append(action)
             else:
                 tool_calls = msg.get('tool_calls')
@@ -324,12 +330,18 @@ def messages_to_replay_events(
                     actions = response_to_actions(response)
                     for action in actions:
                         action._id = None
+                        # AgentController._step() reads action._source when re-adding the
+                        # replayed action to the event stream. response_to_actions() does
+                        # not set this, so AGENT (the natural origin for assistant turns)
+                        # is supplied here.
+                        action._source = EventSource.AGENT
                         replay_events.append(action)
                 else:
                     content = msg.get('content', '')
                     if content:
                         action = MessageAction(content=content, wait_for_response=False)
                         action._id = None
+                        action._source = EventSource.AGENT
                         replay_events.append(action)
 
     if initial_action is None:

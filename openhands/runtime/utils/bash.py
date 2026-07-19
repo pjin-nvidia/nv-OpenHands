@@ -729,8 +729,14 @@ class BashSession:
                 )
             )
 
-        # Check if the command is blacklisted (only for non-input commands)
-        if not is_input and command:
+        # Check if the command is blacklisted (only for non-input commands).
+        # Trusted harness commands (setup/reset/eval scaffolding in
+        # run_infer.py) set `bypass_blacklist=True` so the anti-cheat rules,
+        # which are meant to constrain the *agent's* rollout, don't block the
+        # harness's own git plumbing (e.g. `git merge-base --is-ancestor`).
+        # The agent can never set this flag, so the blacklist stays enforced
+        # for every agent-issued command.
+        if not is_input and command and not getattr(action, 'bypass_blacklist', False):
             blacklist_result = check_command_blacklist(command)
             if blacklist_result.is_blocked:
                 logger.warning(f"Command blocked by blacklist: {command!r}")

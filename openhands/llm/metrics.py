@@ -16,6 +16,7 @@ class ResponseLatency(BaseModel):
     model: str
     latency: float
     response_id: str
+    timestamp: str = ''
 
 
 class TokenUsage(BaseModel):
@@ -133,10 +134,15 @@ class Metrics:
         self._accumulated_cost += value
         self._costs.append(Cost(cost=value, model=self.model_name))
 
-    def add_response_latency(self, value: float, response_id: str) -> None:
+    def add_response_latency(
+        self, value: float, response_id: str, timestamp: str = ''
+    ) -> None:
         self._response_latencies.append(
             ResponseLatency(
-                latency=max(0.0, value), model=self.model_name, response_id=response_id
+                latency=max(0.0, value),
+                model=self.model_name,
+                response_id=response_id,
+                timestamp=timestamp,
             )
         )
 
